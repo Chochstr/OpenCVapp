@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <Windows.h>
 #include <process.h>
+#include <vector>
+#include <string>
 
 using namespace std;
 using namespace cv;
@@ -32,27 +34,43 @@ string lbpcascade_profile ="C:/Users/Chochstr/My Programs/opencv/data/lbpcascade
 // Eyes
 string cascade_eyes = "C:/Users/Chochstr/My Programs/opencv/data/haarcascades/haarcascade_eyes.xml";
 
+// Window name
 string Window_name = "Detect Face(s) in image";
+
+// image width && height
 int im_width;
 int im_height;
 
-Ptr<FaceRecognizer> model;
-Ptr<FaceRecognizer> model2;
+// Pointer Face Recongnizer
+Ptr<FaceRecognizer> Fisher_model;
+Ptr<FaceRecognizer> Eigen_model;
+Ptr<FaceRecognizer> LBPH_model;
 
+// File of path names
 string file_csv = "C:/Users/Chochstr/Pictures/classmates_faces/Myfileslist.txt";
+
+// Store people into person struct
+struct person {
+	int num;
+	string name;
+} p;
 
 // Vectors
 vector<Mat> images;
 vector<int> labels;
+vector<person> people;
 
 CvCapture* capture;
 int prev_predict, predict_series;
 Mat face_resized;
 
 // Prediction Labels
-int predicted_label;
-int predicted_label1;
+int Fisher_Predict, Eigen_Predict, LBPH_Predict;
 
+// Prediction Confidence
+double Fisher_Confidence = 0.0, Eigen_Confidence = 0.0, LBPH_Confidence = 0.0;
+
+// Read file of images and store for Recognition
 static void read_csv(const string& filename, vector<Mat>& images, vector<int>& labels, char separator = ';') {
     std::ifstream file(filename.c_str(), ifstream::in);
     if (!file) {
@@ -68,14 +86,23 @@ static void read_csv(const string& filename, vector<Mat>& images, vector<int>& l
         if(!path.empty() && !classlabel.empty()) {
             images.push_back( imread(path, CV_LOAD_IMAGE_GRAYSCALE) );
             labels.push_back( atoi(classlabel.c_str()) );
+			path.resize(path.find_last_of("/\\"));
+			p.name = path.substr(path.find_last_of("/\\")+1);
+			p.num = atoi(classlabel.c_str());
+			people.emplace_back(p);
         }
     }
 }
 
 void task1(void *param) {
-	predicted_label = -1;
-	double predicted_confidence1 = 0.0;
-	model->predict(face_resized, predicted_label, predicted_confidence1);
+	Fisher_Predict = -1;
+	Fisher_model->predict(face_resized, Fisher_Predict, Fisher_Confidence);
+	_endthread();
+}
+
+void task2(void *param) {
+	LBPH_Predict = -1;
+	LBPH_model->predict(face_resized, LBPH_Predict, LBPH_Confidence);
 	_endthread();
 }
 
@@ -96,8 +123,6 @@ Mat DetectFace(Mat frame) {
 	bool check = true;
 
 	// Prediction results
-	double predicted_confidence1 = 0.0;
-	double predicted_confidence = 0.0;
 	string result, box_text;
 
 	// Detect facess by gray scale
@@ -115,39 +140,60 @@ Mat DetectFace(Mat frame) {
 		// Resize the image
 		resize(face, face_resized, Size(im_width,im_height), 1.0, 1.0, INTER_CUBIC);
 	
-		// Fischer REcognizer
+		// Fischer Recognizer
 		HANDLE hThread;
 		hThread = (HANDLE)_beginthread(task1, 0, NULL);
 
+		// LBPH Recognizer
+		HANDLE hThread2;
+		hThread2 = (HANDLE)_beginthread(task2, 0, NULL);
+
 		// Eigen Recognizer
-		predicted_label1 = -1;
-		model2->predict(face_resized, predicted_label1, predicted_confidence1);
+		Eigen_Predict = -1;
+		Eigen_model->predict(face_resized, Eigen_Predict, Eigen_Confidence);
 
 		// Join threads and only use one
 		WaitForSingleObject(hThread, INFINITE);
+		WaitForSingleObject(hThread2, INFINITE);
 
 		// Draw a rectangle
 		rectangle(original, face_i, CV_RGB(255,255,255), 1);
 
 		// Check if the Labels are the same
-		if(predicted_label == predicted_label1)
-			result = to_string(predicted_label1);
+		if (Fisher_Predict == Eigen_Predict && Fisher_Predict == LBPH_Predict) {
 
-		// Get the result in
-		box_text = result;
+			if (LBPH_Predict != -1) {
 
-		// Position text
-		int pos_x = max(face_i.tl().x - 10, 0);
-		int pos_y = max(face_i.tl().y - 10, 0);
+				for (vector<person>::size_type i = 0; i != people.size(); i++) {
 
-		// Add text with person(s) name
-		putText(original, box_text, Point(pos_x,pos_y), FONT_HERSHEY_PLAIN, 1.0, CV_RGB(255,255,255), 1);
+					if (LBPH_Predict == people[i].num) {
+
+						// Get the name of the person
+						result = people[i].name;
+
+						// store previously found prediction
+						prev_predict = LBPH_Predict;
+						
+						// Get the result in
+						box_text = result;
+
+						// Position text
+						int pos_x = max(face_i.tl().x - 10, 0);
+						int pos_y = max(face_i.tl().y - 10, 0);
+
+						// Add text with person(s) name
+						putText(original, box_text, Point(pos_x,pos_y), FONT_HERSHEY_PLAIN, 1.0, CV_RGB(255,255,255), 1);
+					}
+				}
+			}
+		}
 	}
 
 	// Return the original image
 	return original;
 }
 
+// ReMap the image
 Mat Remap(Mat src) {
 	Mat dst, map_x, map_y;
 	dst.create(src.size(), CV_32FC1);
@@ -164,7 +210,28 @@ Mat Remap(Mat src) {
 }
 
 
+// Creat FisheFace model for face recognizer and train it with
+// images and labels read from the given CSV file. FULL PCA
+void Model_Fisher(void *param) {
+	Fisher_model = createFisherFaceRecognizer();
+	Fisher_model->set("threshold",0.0);
+	Fisher_model->train(images, labels);
+	_endthread();
+}
+
+// Creat EigenFaces model for face recognizer and train it with
+// images and labels read from the given CSV file. FULL PCA
+void Model_Eigen(void *param) {
+	Eigen_model = createEigenFaceRecognizer();
+	Eigen_model->set("threshold",0.0);
+	Eigen_model->train(images, labels);
+	_endthread();
+}
+
 void Image_Detect() {
+
+	// Change Cursor to wait for trainning
+	System::Windows::Forms::Cursor::Current = System::Windows::Forms::Cursors::WaitCursor;
 
 	// Load Face Classifier
 	haar.load(cascade_alt2);
@@ -176,24 +243,37 @@ void Image_Detect() {
 		cerr << "Error opening file \"" << file_csv << "\". Reason: " << e.msg << endl;
 		exit(1);
 	}
+
+	// Get the width and height of images
 	im_width = images[0].rows;
 	im_height = images[0].cols;
 
-	// Creat FisheFace model for face recognizer and train it with
-	// images and labels read from the given CSV file. FULL PCA
-	model = createFisherFaceRecognizer(0, 123.0);
-	model->train(images, labels);
+	// Create a thread to run FisherFace model
+	HANDLE hThread;
+	hThread = (HANDLE)_beginthread(Model_Fisher, 0, NULL);
 
-	// Creat EigenFaces model for face recognizer and train it with
+	// Create a thread to run EigenFace model
+	HANDLE hThread2;
+	hThread2 = (HANDLE)_beginthread(Model_Eigen,0,NULL);
+
+	// Creat LBPH model for face recognizer and train it with
 	// images and labels read from the given CSV file. FULL PCA
-	model2 = createEigenFaceRecognizer(0, 123.0);
-	model2->train(images, labels);
+	LBPH_model = createLBPHFaceRecognizer();
+	LBPH_model->set("threshold",0.0);
+	LBPH_model->train(images, labels);
+
+	// Join threads and only use one
+	WaitForSingleObject(hThread, INFINITE);
+	WaitForSingleObject(hThread2, INFINITE);
 
 	// Set some stuff up
 	prev_predict = -1;
 
+	// Set Cursor to default
+	System::Windows::Forms::Cursor::Current = System::Windows::Forms::Cursors::Default;
+
 	// Loop
-	while(1){
+	while(1) {
 
 		// Capture from Webcam
 		capture = cvCaptureFromCAM(-1);
@@ -217,6 +297,8 @@ void Image_Detect() {
 		char c = waitKey(5);
 		if (c >= 0) break;
 	}
+
+	// Release the image
 	cvReleaseCapture(&capture);
 	destroyWindow(Window_name);
 }

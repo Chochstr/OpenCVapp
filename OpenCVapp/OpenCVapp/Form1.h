@@ -112,6 +112,7 @@ namespace OpenCVapp {
 			// 
 			// textBox1
 			// 
+			this->textBox1->BackColor = System::Drawing::SystemColors::Window;
 			this->textBox1->Location = System::Drawing::Point(86, 12);
 			this->textBox1->Name = L"textBox1";
 			this->textBox1->Size = System::Drawing::Size(145, 20);
@@ -243,6 +244,13 @@ namespace OpenCVapp {
 					cvReleaseCapture(&capture);
 					destroyWindow("OpenCV Capture Window");
 					status = false;
+					system("C:/Users/Chochstr/Pictures/classmates_faces/classmates_Face_Database_OpenCV.vbs");
+				 }
+				 else{
+					 textBox1->BackColor = Color::Red;
+					 Application::DoEvents();
+					 Sleep(1000);
+					 textBox1->BackColor = Color::White;
 				 }
 			 }
 	
